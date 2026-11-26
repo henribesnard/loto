@@ -85,6 +85,18 @@ def test_activites_et_orchestration_hors_ligne(tmp_path):
     assert "19 068 840" in out.avertissement
 
 
+def test_content_to_text():
+    assert pg._content_to_text("bonjour") == "bonjour"
+    assert pg._content_to_text(None) == ""
+    assert pg._content_to_text([]) == ""
+    blocs = [
+        {"type": "thinking", "thinking": [{"type": "text", "text": "réflexion interne"}]},
+        {"type": "text", "text": "Voici "},
+        {"type": "text", "text": "l'analyse."},
+    ]
+    assert pg._content_to_text(blocs) == "Voici l'analyse."
+
+
 def test_charger_proposer_eurodreams(tmp_path):
     game = get_game("eurodreams")
     csv = tmp_path / "eurodreams.csv"

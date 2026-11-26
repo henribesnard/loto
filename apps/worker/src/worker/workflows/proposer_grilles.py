@@ -127,6 +127,29 @@ async def charger_proposer(
     }
 
 
+def _content_to_text(content) -> str:
+    """Extrait le texte d'un contenu de réponse Mistral (str ou liste de blocs).
+
+    Les modèles récents renvoient parfois une liste de blocs (thinking, text...) :
+    on ne garde que les blocs texte.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        else:
+            block_type = getattr(block, "type", "text")
+            text = getattr(block, "text", None)
+            if block_type == "text" and isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
 @workflows.activity(start_to_close_timeout=timedelta(minutes=3), retry_policy_max_attempts=2)
 async def rediger_commentaire(nom_jeu: str, resume: dict, grilles: list, modele: str) -> str:
     from mistralai.workflows.client import get_mistral_client
@@ -146,7 +169,7 @@ async def rediger_commentaire(nom_jeu: str, resume: dict, grilles: list, modele:
         ],
         temperature=0.4,
     )
-    return resp.choices[0].message.content or ""
+    return _content_to_text(resp.choices[0].message.content)
 
 
 @workflows.workflow.define(
