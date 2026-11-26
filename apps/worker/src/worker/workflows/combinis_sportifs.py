@@ -135,7 +135,7 @@ def _content_to_text(content) -> str:
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=3), retry_policy_max_attempts=2)
-async def rediger_commentaire(analyse: dict, cote_minimale: float, modele: str) -> str:
+async def rediger_commentaire_combinis(analyse: dict, cote_minimale: float, modele: str) -> str:
     from mistralai.workflows.client import get_mistral_client
 
     client = get_mistral_client()
@@ -192,7 +192,7 @@ class CombinisSportifsWorkflow:
         )
         commentaire = None
         if input.avec_commentaire_llm and analyse["combines"]:
-            commentaire = await rediger_commentaire(analyse, input.cote_minimale, input.modele)
+            commentaire = await rediger_commentaire_combinis(analyse, input.cote_minimale, input.modele)
         return CombinesOutput(
             source="winamax.fr (flux public, collecte en direct)",
             sports=analyse["sports"],
