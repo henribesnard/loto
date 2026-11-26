@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+# Image du worker Mistral Workflows pour lotagent.
+# Contexte de build : racine du dépôt (tout ce que COPY utilise est à l'intérieur).
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir "mistralai-workflows[mistralai]>=3.17.1" "pydantic>=2"
+
+COPY . .
+
+ENV PYTHONPATH=/app:/app/apps/worker/src
+
+CMD ["python", "-m", "worker.entrypoints.worker"]

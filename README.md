@@ -96,6 +96,40 @@ lotagent/
 tests/          tests unittest (données synthétiques, aucun accès réseau)
 ```
 
+## Agent Mistral : workflow déployé (« se lance directement »)
+
+Le dépôt embarque aussi un **worker Mistral Workflows** (`apps/worker/`) déployé en *managed
+deployment* depuis ce dépôt GitHub. Une fois déployé, le workflow **`proposer-grilles`** se
+lance directement dans AI Studio (ou via API/MCP) — plus besoin de terminal :
+
+- **Entrée** (JSON) : `{"jeu": "eurodreams", "grilles": 2, "seed": 42, "methodes": null,
+  "avec_commentaire_llm": true, "modele": "mistral-large-latest", "csv_path": null}`
+  - `jeu` : `loto` | `euromillions` | `eurodreams` ; `grilles` : nombre de grilles (1–100)
+  - `methodes` / `poids` : méthodes lotagent à appliquer (`null` = toutes)
+  - `csv_path` : CSV local pour tourner hors-ligne (sinon l'historique FDJ est téléchargé)
+  - `avec_commentaire_llm` : ajoute un commentaire d'analyse rédigé par un modèle Mistral
+- **Sortie** : statistiques de l'historique, grilles proposées avec scores par méthode,
+  commentaire LLM, et l'avertissement (hasard pur, aucune grille plus probable qu'une autre).
+
+Pipeline du workflow (toutes les I/O dans des activités, code déterministe) :
+`telecharger_historique` (archives FDJ) → `charger_proposer` (stats + moteur lotagent) →
+`rediger_commentaire` (appel modèle Mistral via `get_mistral_client()`).
+
+```
+apps/worker/            worker Mistral Workflows (workflow proposer-grilles + tests)
+deploy/docker/Dockerfile.worker   image du worker (contexte de build : racine du dépôt)
+.agents/skills/capability-workflows/   skill d authoring Mistral Workflows (référence)
+```
+
+Déploiement (depuis ce dépôt, révision poussée) : build context `.`,
+Dockerfile `deploy/docker/Dockerfile.worker`. Tests locaux du workflow (hors-ligne, via
+`create_test_worker`) :
+
+```bash
+python -m pytest apps/worker/tests -v     # worker + workflow, sans réseau ni clé API
+python -m unittest discover -s tests -t . # package lotagent
+```
+
 ## Tests
 
 ```bash
