@@ -114,8 +114,8 @@ def _cmd_stats(args) -> int:
     expected = total / game.main_max
     chi2, p = st.chi2_uniform(freq, len(subset), game.main_max)
     print(f"\nNuméros principaux (attendu uniforme : {expected:.2f} sorties/numéro) :")
-    print(f"  test du chi² : statistique={chi2:.1f}, p-valeur={p:.3f} "
-          f"({'écart significatif au seuil 5%' if p < 0.05 else 'compatible avec l\'uniformité'})")
+    verdict = "écart significatif au seuil 5%" if p < 0.05 else "compatible avec l'uniformité"
+    print(f"  test du chi² : statistique={chi2:.1f}, p-valeur={p:.3f} ({verdict})")
     hot = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
     cold = sorted(freq.items(), key=lambda kv: (kv[1], kv[0]))[:10]
     print("  plus fréquents : " + ", ".join(f"{n} ({c})" for n, c in hot))
