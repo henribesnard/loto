@@ -1,10 +1,13 @@
 import unittest
+from pathlib import Path
 
-from lotagent.fetcher import extract_zip_links
-from lotagent.games import get_game
-from lotagent.parsers import parse_zip_bytes
+from lotagent.fetcher import FALLBACK_CSV_SOURCES, SNAPSHOT_DIR, extract_zip_links
+from lotagent.games import GAMES, get_game
+from lotagent.parsers import load_draws, parse_zip_bytes
 
 from .helpers import FDJ_LOTO_CSV, make_zip_bytes
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 HTML_PAGE = """
 <html><body>
@@ -39,6 +42,17 @@ class TestFetcher(unittest.TestCase):
         draws, rejected = parse_zip_bytes(make_zip_bytes("loto.csv", FDJ_LOTO_CSV), game)
         self.assertEqual(len(draws), 3)
         self.assertEqual(rejected, 0)
+
+    def test_sources_couvrent_tous_les_jeux(self):
+        for key in GAMES:
+            self.assertIn(key, FALLBACK_CSV_SOURCES)
+            self.assertTrue((SNAPSHOT_DIR / f"{key}.csv").exists(), f"snapshot manquant: {key}")
+
+    def test_snapshots_reels_se_parsent(self):
+        for key, game in GAMES.items():
+            draws = load_draws(SNAPSHOT_DIR / f"{key}.csv", game)
+            self.assertGreater(len(draws), 100, key)
+            self.assertTrue(all(d.is_valid(game) for d in draws), key)
 
 
 if __name__ == "__main__":

@@ -65,11 +65,13 @@ class ProposerOutput(BaseModel):
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=10), retry_policy_max_attempts=2)
-async def telecharger_historique(jeu: str, data_dir: str) -> str:
-    from lotagent.fetcher import fetch_history
+async def telecharger_historique(jeu: str, data_dir: str) -> dict:
+    from lotagent.fetcher import fetch_history, read_source
     from lotagent.games import get_game
 
-    return str(fetch_history(get_game(jeu), data_dir=data_dir))
+    game = get_game(jeu)
+    path = fetch_history(game, data_dir=data_dir)
+    return {"csv": str(path), "source": read_source(data_dir, game) or str(path)}
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=5))
@@ -159,9 +161,13 @@ async def rediger_commentaire(nom_jeu: str, resume: dict, grilles: list, modele:
 class ProposerGrillesWorkflow:
     @workflows.workflow.entrypoint
     async def run(self, input: ProposerInput) -> ProposerOutput:
-        csv_path = input.csv_path
-        if csv_path is None:
-            csv_path = await telecharger_historique(input.jeu, "data")
+        source = input.csv_path or "fichier fourni en entrée"
+        if input.csv_path is None:
+            infos = await telecharger_historique(input.jeu, "data")
+            csv_path = infos["csv"]
+            source = infos["source"]
+        else:
+            csv_path = input.csv_path
         stats = await charger_proposer(
             input.jeu,
             csv_path,
@@ -181,7 +187,7 @@ class ProposerGrillesWorkflow:
             nom_jeu=stats["nom_jeu"],
             nb_tirages=stats["resume_stats"]["nb_tirages"],
             periode=stats["resume_stats"]["periode"],
-            source=stats["source"],
+            source=source,
             resume_stats=stats["resume_stats"],
             grilles=[GrilleProposee(**g) for g in stats["grilles"]],
             commentaire_llm=commentaire,

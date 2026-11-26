@@ -79,6 +79,13 @@ Le fetcher scrape la page, télécharge chaque ZIP une seule fois (cache `data/r
 normalise tous les tirages valides et écrit `data/<jeu>.csv` au format canonique
 `date;main_1;...;extra_1;...`.
 
+**Chaîne de sources de secours** (utile quand l'egress vers `sto.api.fdj.fr` est bloqué,
+par ex. depuis un worker cloud) : 1) archives ZIP officielles FDJ, 2) miroirs CSV qui
+republient ces archives (`juhuj.com/donnees/*-tirages.csv`, `mes-resultats-fdj.fr`),
+3) snapshots embarqués dans `snapshots/` (voir `snapshots/README.md`). La source
+réellement utilisée est écrite dans `data/<jeu>.source.txt` et rapportée dans la sortie
+du workflow.
+
 ## Architecture
 
 ```
