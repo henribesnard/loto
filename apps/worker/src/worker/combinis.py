@@ -278,7 +278,7 @@ def construire_combines(
     if not favoris:
         return []
 
-    utiles = [j for j in favoris if j["cote"] >= 1.15] or list(favoris)
+    # Les cotes extrêmes (> 12 : buteurs, score exact…) restent en réserve :\n    # en jambes principales elles produiraient des combinés à une seule sélection.\n    utiles = [j for j in favoris if 1.15 <= j["cote"] <= 12.0] or list(favoris)
 
     strategies: list[tuple[str, list[dict]]] = []
 
