@@ -1,9 +1,10 @@
 """Logique métier des combinés sportifs : fonctions pures, testables sans réseau.
 
-Reçoit l'état fusionné du flux Winamax (voir ``worker.winamax``), filtre les matchs
-des prochains jours, en extrait les marchés « Résultat » avec leurs cotes, puis
-construit des combinés dont la cote totale atteint au minimum la cible demandée
-(500 par défaut).
+Reçoit l'état fusionné du flux Winamax (voir worker.winamax), filtre les matchs
+des prochains jours, en extrait tous les marchés exposés par le flux (Résultat,
+les deux équipes marquent, buts plus/moins, handicap, etc.) avec leurs cotes,
+puis construit des combinés dont la cote totale atteint au minimum la cible
+demandée (500 par défaut).
 
 Aucune prétention prédictive : une cote de 500 correspond à une probabilité
 implicite d'environ 0,2 %. Les heuristiques de forme servent un classement
@@ -126,36 +127,57 @@ def _selections_completes(etat: dict, bet: dict) -> Optional[list[dict]]:
     return selections
 
 
-def extraire_candidats(etat: dict, matchs: list[dict]) -> list[dict]:
-    """Pour chaque match, attache le marché « Résultat » retenu et ses sélections.
+def _marche_admis(categorie: str, filtres: Optional[list[str]]) -> bool:
+    """Vrai si la catégorie de marché est demandée (filtre absent = tous)."""
+    if not filtres:
+        return True
+    normalisee = _normaliser(categorie)
+    return any(_normaliser(f) in normalisee for f in filtres)
 
-    Priorité : identifiant de marché « moneyline » connu pour le sport, puis
-    tout marché de catégorie « Résultat » à 2 ou 3 issues complètes, en
-    privilégiant celui dont la cote du favori est correcte côté bookmaker
-    (le favori a la plus petite cote).
+
+def extraire_candidats(
+    etat: dict,
+    matchs: list[dict],
+    marches: Optional[list[str]] = None,
+) -> list[dict]:
+    """Pour chaque match, extrait tous les marchés retenus et leurs issues.
+
+    Renvoie une liste de candidats « match × marché » : chaque candidat porte
+    les champs du match, 'marche' (catégorie du marché, ex. « Résultat »,
+    « Les deux équipes marquent ») et 'selections' (issues complètes du
+    marché : libellés + cotes). 'marches' restreint aux catégories dont le nom
+    contient une des chaînes données (insensible à la casse et aux accents) ;
+    None = tous les marchés exposés par le flux Winamax pour chaque match.
+
+    Le marché « Résultat » (moneyline) garde la priorité en tête de la liste
+    de chaque match (tri stable par identifiant de marché connu).
     """
+    candidats: list[dict] = []
     for m in matchs:
-        m["selections"] = []
-        paris = _paris_du_match(etat, m["matchId"])
         cible = MONEYLINE_MARKET_IDS.get(m["sportId"])
-        retains: list[tuple[int, list[dict]]] = []
-        for bet in paris:
+        retenus: list[tuple[int, str, list[dict]]] = []
+        for bet in _paris_du_match(etat, m["matchId"]):
             if bet.get("available") is False:
                 continue
             selections = _selections_completes(etat, bet)
-            if not selections or len(selections) not in (2, 3):
+            if not selections or len(selections) < 2:
                 continue
-            if bet.get("betTypeCategory") not in (None, "Résultat"):
+            categorie = str(bet.get("betTypeCategory") or "").strip() or "Autre"
+            if not _marche_admis(categorie, marches):
                 continue
             try:
                 priorite = 0 if int(bet.get("marketId", -1)) == cible else 1
             except (TypeError, ValueError):
                 priorite = 1
-            retains.append((priorite, selections))
-        retains.sort(key=lambda p: p[0])
-        if retains:
-            m["selections"] = retains[0][1]
-    return matchs
+            retenus.append((priorite, categorie, selections))
+        retenus.sort(key=lambda r: r[0])
+        for _priorite, categorie, selections in retenus:
+            c = dict(m)
+            c["marche"] = categorie
+            c["marcheKey"] = f"{m['matchId']}::{categorie}"
+            c["selections"] = selections
+            candidats.append(c)
+    return candidats
 
 
 def _bonus_forme(forme: Optional[str]) -> float:
@@ -169,7 +191,7 @@ def _bonus_forme(forme: Optional[str]) -> float:
 
 
 def _jambe_favorite(m: dict) -> Optional[dict]:
-    """Sélection la plus probable (plus petite cote) d'un match."""
+    """Sélection la plus probable (plus petite cote) d'un marché."""
     selections = m.get("selections") or []
     if not selections:
         return None
@@ -189,6 +211,8 @@ def _faire_jambe(m: dict, selection: dict) -> dict:
         "match": m["titre"],
         "matchId": m["matchId"],
         "sportId": m["sportId"],
+        "marche": m.get("marche"),
+        "marcheKey": m.get("marcheKey") or str(m["matchId"]),
         "debut": m["debut"],
         "pari": selection["libelle"] or "-",
         "cote": selection["cote"],
@@ -225,15 +249,18 @@ def construire_combines(
     nb_combines: int = 3,
     max_jambes: int = 40,
 ) -> list[dict]:
-    """Construit jusqu'à ``nb_combines`` combinés distincts ≥ ``cote_min``.
+    """Construit jusqu'à nb_combines combinés distincts ≥ cote_min.
 
     Trois stratégies déterministes, chacune partant des favoris (plus petite
-    cote par match), complétées au besoin par les autres issues du match :
+    cote par marché, toutes catégories confondues), complétées au besoin par
+    les autres issues des marchés :
       1. « Cible »   : favoris triés par cote décroissante (moins de jambes) ;
       2. « Équilibré »: alternance entre sports pour répartir le risque ;
       3. « Forme »   : favoris triés par score de confiance (forme récente).
 
-    Les cotes ultra-courtes (< 1.15) n'apportent presque rien au produit : elles
+    Un marché déjà consommé par un combiné (clé matchId × catégorie) n'est pas
+    réutilisé par les combinés suivants, ce qui garantit des combinés aux
+    marchés deux à deux disjoints. Les cotes ultra-courtes (< 1.15)
     n'alimentent pas les jambes principales mais restent en réserve de secours.
     """
     candidats = [m for m in candidats if m.get("selections")]
@@ -276,19 +303,19 @@ def construire_combines(
 
     combines: list[dict] = []
     deja_vus: set[tuple] = set()
-    exclus_globaux: set[int] = set()
+    exclus_globaux: set[str] = set()
     reserve_desc = sorted(reserve, key=lambda j: -j["cote"])
     for titre, jambes in strategies:
-        disponibles = [j for j in jambes if j["matchId"] not in exclus_globaux]
-        complement = [j for j in reserve_desc if j["matchId"] not in exclus_globaux]
+        disponibles = [j for j in jambes if j["marcheKey"] not in exclus_globaux]
+        complement = [j for j in reserve_desc if j["marcheKey"] not in exclus_globaux]
         complet = _completer(disponibles, complement, cote_min, max_jambes)
         if not complet:
             continue
-        cle = tuple(sorted(j["matchId"] for j in complet))
+        cle = tuple(sorted(j["marcheKey"] for j in complet))
         if cle in deja_vus:
             continue
         deja_vus.add(cle)
-        exclus_globaux.update(j["matchId"] for j in complet)
+        exclus_globaux.update(j["marcheKey"] for j in complet)
         combines.append({
             "titre": titre,
             "cote_totale": round(_produit(complet), 2),
@@ -306,6 +333,7 @@ def completes_formatees(jambes: list[dict]) -> list[dict]:
         formatees.append({
             "sport": j["sport"],
             "match": j["match"],
+            "marche": j.get("marche"),
             "pari": j["pari"],
             "cote": j["cote"],
             "debut_iso": datetime.fromtimestamp(j["debut"], tz=timezone.utc).isoformat(),
