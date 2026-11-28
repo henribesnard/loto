@@ -29,7 +29,7 @@ AVERTISSEMENT = (
     "Rappel : les paris sportifs comportent un risque de perte. Un combiné à la cote de 500 a une "
     "probabilité implicite d'environ 0,2 % : aucune analyse ni forme récente ne garantit un gain. "
     "Les cotes affichées sont celles de winamax.fr au moment de la collecte et peuvent changer. "
-    "Jouez de manière responsabilité : joueurs-info-service.fr (09 74 75 13 13, interdiction "
+    "Jouez de manière responsable : joueurs-info-service.fr (09 74 75 13 13, interdiction "
     "volontaire possible auprès de l'ANJ)."
 )
 
