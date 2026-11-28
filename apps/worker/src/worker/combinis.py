@@ -326,7 +326,10 @@ def construire_combines(
     combines: list[dict] = []
     deja_vus: set[tuple] = set()
     exclus_globaux: set[str] = set()
-    reserve_desc = sorted(reserve, key=lambda j: -j["cote"])
+    # Les cotes extrêmes sont aussi écartées de la réserve : une jambe à 5000
+    # produirait un combiné à une seule sélection.
+    reserve_utiles = [j for j in reserve if 1.15 <= j["cote"] <= 12.0]
+    reserve_desc = sorted(reserve_utiles or reserve, key=lambda j: -j["cote"])
     for titre, jambes in strategies:
         disponibles = [j for j in jambes if j["marcheKey"] not in exclus_globaux]
         complement = [j for j in reserve_desc if j["marcheKey"] not in exclus_globaux]
