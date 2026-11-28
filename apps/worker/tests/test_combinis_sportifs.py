@@ -1,8 +1,9 @@
 """Tests des modules combinis + winamax (aucun accès réseau).
 
 Couvre : fusion des payloads Winamax, extraction/filtrage des matchs,
-Attachement des marchés « Résultat », construction des combinés (cote
-minimale, jambes maximales, diversité) et découpage des trames engine.io.
+extraction de tous les marchés (Résultat, BTTS, buts plus/moins…), filtre
+par catégories de marchés, construction des combinés (cote minimale, jambes
+maximales, diversité, marchés disjoints) et découpage des trames engine.io.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -30,7 +31,7 @@ def _match(match_id, sport_id, jours=1, domicile="Equipe A", exterieur="Equipe B
 def _etat_compose(matchs, cotes_par_match=None):
     """Construit un état fusionné : matchs + un marché « Résultat » par match.
 
-    ``cotes_par_match`` : dict matchId → liste de cotes [1, N, 2] ou [1, 2].
+    'cotes_par_match' : dict matchId → liste de cotes [1, N, 2] ou [1, 2].
     """
     etat = wx.nouvel_etat()
     for m in matchs:
@@ -55,6 +56,25 @@ def _etat_compose(matchs, cotes_par_match=None):
             "template": "3way" if len(cotes) == 3 else "2way",
             "outcomes": identifiants,
         }
+    return etat
+
+
+def _ajouter_marche(etat, m, categorie, labels, cotes, market_id=999):
+    """Ajoute un marché supplémentaire (ex. BTTS, buts plus/moins) à un match."""
+    bet_id = int(m["matchId"]) * 1000 + market_id
+    identifiants = []
+    for index, (label, cote) in enumerate(zip(labels, cotes)):
+        oid = bet_id * 100 + index
+        etat["odds"][str(oid)] = cote
+        etat["outcomes"][str(oid)] = {"betId": bet_id, "label": label}
+        identifiants.append(oid)
+    etat["bets"][str(bet_id)] = {
+        "betId": bet_id,
+        "matchId": int(m["matchId"]),
+        "marketId": market_id,
+        "betTypeCategory": categorie,
+        "outcomes": identifiants,
+    }
     return etat
 
 
@@ -97,10 +117,39 @@ def test_extraire_candidats_attache_selections():
     assert len(matchs[0]["selections"]) == 3
     assert matchs[0]["selections"][0]["libelle"] == "Equipe A"
     assert matches_preferes(matchs) == 1.9
+    assert matchs[0]["marche"] == "Résultat"
+    assert matchs[0]["marcheKey"] == "1::Résultat"
 
 
 def matches_preferes(matchs):
     return min(s["cote"] for s in matchs[0]["selections"])
+
+
+def test_extraire_candidats_tous_marches():
+    """Un match avec Résultat + BTTS + buts : un candidat par marché."""
+    m1 = _match(1, 1, jours=1)
+    etat = _etat_compose([m1], cotes_par_match={1: [2.0, 3.4, 3.8]})
+    _ajouter_marche(etat, m1, "Les deux équipes marquent", ["Oui", "Non"], [1.8, 2.0])
+    _ajouter_marche(etat, m1, "Buts", ["Plus de 2.5", "Moins de 2.5"], [1.9, 1.9], market_id=777)
+    candidats = cb.extraire_candidats(etat, cb.extraire_matchs(etat, *cb.fenetre(3), [1]))
+    categories = [c["marche"] for c in candidats]
+    assert categories[0] == "Résultat"  # moneyline prioritaire
+    assert set(categories) == {"Résultat", "Les deux équipes marquent", "Buts"}
+    assert len({c["marcheKey"] for c in candidats}) == 3
+    btts = next(c for c in candidats if c["marche"] == "Les deux équipes marquent")
+    assert {s["libelle"] for s in btts["selections"]} == {"Oui", "Non"}
+
+
+def test_extraire_candidats_filtre_marches():
+    """Le paramètre 'marches' restreint aux catégories demandées."""
+    m1 = _match(1, 1, jours=1)
+    etat = _etat_compose([m1], cotes_par_match={1: [2.0, 3.4, 3.8]})
+    _ajouter_marche(etat, m1, "Les deux équipes marquent", ["Oui", "Non"], [1.8, 2.0])
+    candidats = cb.extraire_candidats(
+        etat, cb.extraire_matchs(etat, *cb.fenetre(3), [1]),
+        marches=["deux équipes marquent"],
+    )
+    assert [c["marche"] for c in candidats] == ["Les deux équipes marquent"]
 
 
 def test_construire_combines_atteint_cote_min():
@@ -123,6 +172,47 @@ def test_construire_combines_atteint_cote_min():
     # combinés deux à deux distincts
     cles = {tuple(sorted(s["match"] for s in c["selections"])) for c in combines}
     assert len(cles) == 3
+
+
+def test_construire_combines_marches_disjoints():
+    """Deux combinés ne réutilisent jamais le même marché du même match."""
+    matchs = []
+    for i in range(1, 21):
+        m = _match(i, 1, jours=1, domicile=f"Domicile {i}", exterieur=f"Exterieur {i}")
+        matchs.append(m)
+    etat = _etat_compose(matchs, cotes_par_match={m["matchId"]: [2.0, 3.2, 3.8] for m in matchs})
+    for m in matchs:
+        _ajouter_marche(etat, m, "Les deux équipes marquent", ["Oui", "Non"], [1.7, 2.1])
+        _ajouter_marche(etat, m, "Buts", ["Plus de 2.5", "Moins de 2.5"], [1.9, 1.9], market_id=777)
+    candidats = cb.extraire_candidats(etat, cb.extraire_matchs(etat, *cb.fenetre(3), [1]))
+    combines = cb.construire_combines(candidats, cote_min=500.0, nb_combines=3)
+    assert len(combines) == 3
+    cles_utilisees = []
+    for combine in combines:
+        cles_utilisees.append({s.get("marcheKey") for s in combine["selections"]})
+        # chaque sélection porte son marché
+        for sel in combine["selections"]:
+            assert sel["marche"] in ("Résultat", "Les deux équipes marquent", "Buts")
+    # pas de marché partagé entre combinés
+    for i in range(len(cles_utilisees)):
+        for j in range(i + 1, len(cles_utilisees)):
+            assert not (cles_utilisees[i] & cles_utilisees[j])
+
+
+def test_construire_combines_utilise_plusieurs_marches():
+    """Avec tous les marchés, un combiné peut mêler Résultat et BTTS."""
+    matchs = []
+    for i in range(1, 21):
+        m = _match(i, 1, jours=1, domicile=f"Domicile {i}", exterieur=f"Exterieur {i}")
+        matchs.append(m)
+    etat = _etat_compose(matchs, cotes_par_match={m["matchId"]: [1.5, 3.2, 5.0] for m in matchs})
+    for m in matchs:
+        _ajouter_marche(etat, m, "Les deux équipes marquent", ["Oui", "Non"], [1.7, 2.1])
+    candidats = cb.extraire_candidats(etat, cb.extraire_matchs(etat, *cb.fenetre(3), [1]))
+    combines = cb.construire_combines(candidats, cote_min=50.0, nb_combines=1)
+    assert len(combines) == 1
+    marches_vus = {s["marche"] for s in combines[0]["selections"]}
+    assert marches_vus == {"Résultat", "Les deux équipes marquent"}
 
 
 def test_construire_combines_renforce_avec_reserve():
@@ -152,6 +242,8 @@ def test_bonus_forme_et_jambe_favorite():
     jambe = cb._jambe_favorite(candidats[0])
     assert jambe["pari"] == "Equipe A"
     assert jambe["score_confiance"] > 0.5
+    assert jambe["marche"] == "Résultat"
+    assert jambe["marcheKey"] == "7::Résultat"
 
 
 def test_ids_sports_coherents():
