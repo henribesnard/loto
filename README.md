@@ -154,3 +154,40 @@ construits en mémoire, historiques synthétiques, CLI lancée en subprocess ave
   format 6 boules + complémentaire : elles sont ignorées pour le jeu LOTO actuel.
 - Le site fdj.fr pouvant changer de structure, le fetcher lève une erreur explicite
   si plus aucun lien `.zip` n'est trouvé sur la page historique.
+
+
+## Workflow `combinis-sportifs` (combinés de paris sportifs, cotes Winamax)
+
+Deuxième workflow du même worker : collecte les **cotes réelles de winamax.fr**
+(flux public Socket.IO du site, transport HTTP polling, sans navigateur ni
+granularité payante) pour cinq sports : **football, tennis, basket, hockey sur
+glace, rugby à XV** : sur les **3 prochains jours**, puis construit de façon
+déterministe des **combinés dont la cote totale atteint au minimum la cible
+(500 par défaut)**, avec commentaire d'analyse rédigé par un modèle Mistral.
+
+- **Entrée** (JSON) : `{"sports": [...], "jours": 3, "cote_minimale": 500,
+  "nb_combines": 3, "filtres_equipes": null, "avec_commentaire_llm": true,
+  "modele": "mistral-large-latest"}`
+  - `sports` : sous-ensemble de `["football", "basket", "hockey", "tennis", "rugby"]`
+  - `filtres_equipes` : restreint aux matchs dont le titre contient une de ces
+    chaînes (insensible à la casse et aux accents) : passer les **noms des
+    équipes** d'une compétition pour cibler celle-ci (ex. les affiches de la
+    Ligue Europa du soir)
+- **Sortie** : liste de combinés (cote totale, sélections avec sport, match,
+  pari, cote, date, forme récente), commentaire LLM, avertissement de jeu
+  responsable
+- **Stratégies** : « Cote cible » (favoris à plus haute cote, moins de jambes),
+  « Équilibré multi-sports », « Confiance / forme récente » ; les combinés sont
+  deux à deux sans match en commun
+- **Avertissement** : une cote de 500 correspond à une probabilité implicite
+  d'environ 0,2 %. Aucune sélection n'est garantie ; les cotes Winamax changent
+  en continu. Jouez de manière responsable.
+
+```
+apps/worker/src/worker/winamax.py                      client Socket.IO polling Winamax (stdlib)
+apps/worker/src/worker/combinis.py                     logique pure : filtrage, marchés, combinés
+apps/worker/src/worker/workflows/combinis_sportifs.py  workflow (entrées/sorties + activités)
+apps/worker/tests/test_combinis_sportifs.py             tests hors-ligne (aucun réseau)
+```
+
+Tests : `python -m pytest apps/worker/tests/test_combinis_sportifs.py -v`
