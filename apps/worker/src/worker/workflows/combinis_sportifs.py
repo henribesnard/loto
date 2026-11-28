@@ -3,6 +3,8 @@
 Pipeline : collecte des matchs et cotes Winamax (flux public Socket.IO, transport
 polling, sans navigateur) pour le football, le tennis, le basket, le hockey et
 le rugby à XV → filtrage des matchs des prochains jours (3 par défaut) →
+extraction de tous les marchés exposés par le flux (Résultat, les deux équipes
+marquent, buts plus/moins, handicap, etc. ; restreignable via « marches ») →
 construction déterministe de combinés dont la cote totale atteint au minimum la
 cible (500 par défaut) → commentaire rédigé par un modèle Mistral.
 
@@ -33,12 +35,14 @@ AVERTISSEMENT = (
 SYSTEM_PROMPT = (
     "Tu es un analyste sportif francophone. On te fournit des combinés construits à partir des "
     "cotes réelles de Winamax (matchs professionnels de football, tennis, basket, hockey et rugby "
-    "à XV). Rédige en français un commentaire court (5 à 8 phrases) qui explicite la logique de "
-    "chaque combiné (favoris choisis, forme récente des équipes, répartition entre sports), sans "
-    "jamais promettre de gain ni présenter les cotes comme une opportunité sure. Tu dois TOUJOURS "
-    "conclure en rappelant qu'un combiné à très haute cote est mathématiquement très improbable "
-    "et en invitant à jouer de manière responsable. Reste factuel : les cotes viennent de "
-    "winamax.fr et la probabilité implicite d'un combiné à la cote C est 1/C."
+    "à XV), sur tous les marchés proposés (résultat, les deux équipes marquent, buts plus/moins, "
+    "handicap, etc.). Rédige en français un commentaire court (5 à 8 phrases) qui explicite la "
+    "logique de chaque combiné (favoris choisis, marchés utilisés, forme récente des équipes, "
+    "répartition entre sports), sans jamais promettre de gain ni présenter les cotes comme une "
+    "opportunité sure. Tu dois TOUJOURS conclure en rappelant qu'un combiné à très haute cote est "
+    "mathématiquement très improbable et en invitant à jouer de manière responsable. Reste "
+    "factuel : les cotes viennent de winamax.fr et la probabilité implicite d'un combiné à la "
+    "cote C est 1/C."
 )
 
 
@@ -55,6 +59,15 @@ class CombinesInput(BaseModel):
             "['Lyon', 'Anderlecht']). Insensible à la casse et aux accents."
         ),
     )
+    marches: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Restriction aux marchés dont la catégorie contient au moins une de ces "
+            "chaînes (ex. ['Résultat', 'Les deux équipes marquent', 'Buts']). "
+            "Insensible à la casse et aux accents ; None = tous les marchés "
+            "proposés par Winamax pour chaque match."
+        ),
+    )
     avec_commentaire_llm: bool = True
     modele: str = "mistral-large-latest"
 
@@ -62,6 +75,7 @@ class CombinesInput(BaseModel):
 class Selection(BaseModel):
     sport: str
     match: str
+    marche: Optional[str] = None
     pari: str
     cote: float
     debut_iso: str
@@ -94,6 +108,7 @@ async def collecter_analyser(
     cote_minimale: float,
     nb_combines: int,
     filtres_equipes: Optional[list[str]],
+    marches: Optional[list[str]],
 ) -> dict:
     from worker import combinis
     from worker import winamax
@@ -103,14 +118,14 @@ async def collecter_analyser(
     ids = [winamax.SPORT_IDS[s] for s in sports]
     matchs = combinis.extraire_matchs(etat, maintenant, fin, ids, filtres_equipes)
     nb_matchs = len(matchs)
-    matchs = combinis.extraire_candidats(etat, matchs)
-    avec_cotes = [m for m in matchs if m["selections"]]
-    combines = combinis.construire_combines(avec_cotes, cote_min=cote_minimale, nb_combines=nb_combines)
+    candidats = combinis.extraire_candidats(etat, matchs, marches)
+    matchs_avec_cotes = {c["matchId"] for c in candidats}
+    combines = combinis.construire_combines(candidats, cote_min=cote_minimale, nb_combines=nb_combines)
     return {
         "sports": sports,
         "fenetre": combinis.plage_lisible(maintenant, fin),
         "nb_matchs_analyses": nb_matchs,
-        "nb_matchs_avec_cotes": len(avec_cotes),
+        "nb_matchs_avec_cotes": len(matchs_avec_cotes),
         "combines": combines,
     }
 
@@ -171,13 +186,15 @@ async def rediger_commentaire_combinis(analyse: dict, cote_minimale: float, mode
 
 @workflows.workflow.define(
     name="combinis-sportifs",
-    workflow_display_name="Combinés sportifs Winamax (5 sports, 3 prochains jours, cote ≥ 500)",
+    workflow_display_name="Combinés sportifs Winamax (5 sports, 3 prochains jours, tous marchés)",
     workflow_description=(
         "Collecte les cotes réelles de winamax.fr (football, tennis, basket, hockey, rugby à XV) "
-        "sur les prochains jours et construit des combinés dont la cote totale atteint au minimum "
-        "la cible (500 par défaut). Peut être restreint à des équipes données (ex. les matchs "
-        "d'une compétition précise) via filtres_equipes. Ajoute un commentaire d'analyse Mistral. "
-        "Rappel : très haute cote = très faible probabilité, jouer reste un risque."
+        "sur les prochains jours, sur tous les marchés proposés (résultat, les deux équipes "
+        "marquent, buts plus/moins, handicap, etc.), et construit des combinés dont la cote "
+        "totale atteint au minimum la cible (500 par défaut). Peut être restreint à des équipes "
+        "données (filtres_equipes) ou à certaines catégories de marchés (marches). Ajoute un "
+        "commentaire d'analyse Mistral. Rappel : très haute cote = très faible probabilité, "
+        "jouer reste un risque."
     ),
 )
 class CombinisSportifsWorkflow:
@@ -189,6 +206,7 @@ class CombinisSportifsWorkflow:
             input.cote_minimale,
             input.nb_combines,
             input.filtres_equipes,
+            input.marches,
         )
         commentaire = None
         if input.avec_commentaire_llm and analyse["combines"]:
