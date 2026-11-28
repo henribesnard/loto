@@ -65,7 +65,8 @@ class CombinesInput(BaseModel):
             "Restriction aux marchés dont la catégorie contient au moins une de ces "
             "chaînes (ex. ['Résultat', 'Les deux équipes marquent', 'Buts']). "
             "Insensible à la casse et aux accents ; None = tous les marchés "
-            "proposés par Winamax pour chaque match."
+            "proposés par Winamax pour chaque match. Les catégories réellement "
+            "rencontrées sont listées dans le champ 'marches_disponibles' du résultat."
         ),
     )
     avec_commentaire_llm: bool = True
@@ -96,6 +97,7 @@ class CombinesOutput(BaseModel):
     fenetre: str
     nb_matchs_analyses: int
     nb_matchs_avec_cotes: int
+    marches_disponibles: dict[str, int]
     combines: list[Combine]
     commentaire_llm: Optional[str]
     avertissement: str
@@ -120,12 +122,16 @@ async def collecter_analyser(
     nb_matchs = len(matchs)
     candidats = combinis.extraire_candidats(etat, matchs, marches)
     matchs_avec_cotes = {c["matchId"] for c in candidats}
+    marches_disponibles: dict[str, int] = {}
+    for c in candidats:
+        marches_disponibles[c["marche"]] = marches_disponibles.get(c["marche"], 0) + 1
     combines = combinis.construire_combines(candidats, cote_min=cote_minimale, nb_combines=nb_combines)
     return {
         "sports": sports,
         "fenetre": combinis.plage_lisible(maintenant, fin),
         "nb_matchs_analyses": nb_matchs,
         "nb_matchs_avec_cotes": len(matchs_avec_cotes),
+        "marches_disponibles": marches_disponibles,
         "combines": combines,
     }
 
@@ -192,9 +198,9 @@ async def rediger_commentaire_combinis(analyse: dict, cote_minimale: float, mode
         "sur les prochains jours, sur tous les marchés proposés (résultat, les deux équipes "
         "marquent, buts plus/moins, handicap, etc.), et construit des combinés dont la cote "
         "totale atteint au minimum la cible (500 par défaut). Peut être restreint à des équipes "
-        "données (filtres_equipes) ou à certaines catégories de marchés (marches). Ajoute un "
-        "commentaire d'analyse Mistral. Rappel : très haute cote = très faible probabilité, "
-        "jouer reste un risque."
+        "données (filtres_equipes) ou à certaines catégories de marchés (marches ; les catégories "
+        "rencontrées sont listées dans marches_disponibles). Ajoute un commentaire d'analyse "
+        "Mistral. Rappel : très haute cote = très faible probabilité, jouer reste un risque."
     ),
 )
 class CombinisSportifsWorkflow:
@@ -217,6 +223,7 @@ class CombinisSportifsWorkflow:
             fenetre=analyse["fenetre"],
             nb_matchs_analyses=analyse["nb_matchs_analyses"],
             nb_matchs_avec_cotes=analyse["nb_matchs_avec_cotes"],
+            marches_disponibles=analyse["marches_disponibles"],
             combines=[Combine(**c) for c in analyse["combines"]],
             commentaire_llm=commentaire,
             avertissement=AVERTISSEMENT,
