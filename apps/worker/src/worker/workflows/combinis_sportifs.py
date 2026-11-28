@@ -3,10 +3,11 @@
 Pipeline : collecte des matchs et cotes Winamax (flux public Socket.IO, transport
 polling, sans navigateur) pour le football, le tennis, le basket, le hockey et
 le rugby à XV → filtrage des matchs des prochains jours (3 par défaut) →
-extraction de tous les marchés exposés par le flux (Résultat, les deux équipes
-marquent, buts plus/moins, handicap, etc. ; restreignable via « marches ») →
-construction déterministe de combinés dont la cote totale atteint au minimum la
-cible (500 par défaut) → commentaire rédigé par un modèle Mistral.
+second passage d'abonnements « match:<id> » pour récupérer les marchés détaillés
+de chaque match (les deux équipes marquent, buts plus/moins, handicap, etc. ;
+restreignable via « marches ») → construction déterministe de combinés dont la
+cote totale atteint au minimum la cible (500 par défaut) → commentaire rédigé
+par un modèle Mistral.
 
 Toute les I/O (réseau Winamax, appels LLM) vivent dans des activités ; le code du
 workflow lui-même reste déterministe. Usage personnel : les cotes appartiennent à
@@ -28,7 +29,7 @@ AVERTISSEMENT = (
     "Rappel : les paris sportifs comportent un risque de perte. Un combiné à la cote de 500 a une "
     "probabilité implicite d'environ 0,2 % : aucune analyse ni forme récente ne garantit un gain. "
     "Les cotes affichées sont celles de winamax.fr au moment de la collecte et peuvent changer. "
-    "Jouez de manière responsable : joueurs-info-service.fr (09 74 75 13 13, interdiction "
+    "Jouez de manière responsabilité : joueurs-info-service.fr (09 74 75 13 13, interdiction "
     "volontaire possible auprès de l'ANJ)."
 )
 
@@ -103,6 +104,14 @@ class CombinesOutput(BaseModel):
     avertissement: str
 
 
+def _fusionner_etats(cible: dict, source: dict) -> None:
+    """Fusionne un second état de collecte dans le premier (idempotent)."""
+    for cle in ("matches", "bets", "outcomes", "tournaments"):
+        bloc = source.get(cle) or {}
+        cible[cle].update(bloc)
+    cible["odds"].update(source.get("odds") or {})
+
+
 @workflows.activity(start_to_close_timeout=timedelta(minutes=8), retry_policy_max_attempts=2)
 async def collecter_analyser(
     sports: list[str],
@@ -115,11 +124,26 @@ async def collecter_analyser(
     from worker import combinis
     from worker import winamax
 
+    # Premier passage : abonnements par sport → matchs de la fenêtre + marchés principaux.
     etat = winamax.collecter_matchs(sports, duree_s=30.0)
     maintenant, fin = combinis.fenetre(jours)
     ids = [winamax.SPORT_IDS[s] for s in sports]
     matchs = combinis.extraire_matchs(etat, maintenant, fin, ids, filtres_equipes)
     nb_matchs = len(matchs)
+
+    # Second passage : abonnements « match:<id> » pour les marchés détaillés
+    # (les deux équipes marquent, buts plus/moins, handicap, etc.).
+    routes = [f"match:{m['matchId']}" for m in matchs[:120]]
+    if routes:
+        try:
+            etat_detail = winamax.collecter_matchs(
+                sports, duree_s=15.0, complement_match_s=45.0, routes_matchs=routes
+            )
+            _fusionner_etats(etat, etat_detail)
+        except winamax.WinamaxError:
+            # Le flux détaillé peut échouer : on garde les marchés principaux.
+            pass
+
     candidats = combinis.extraire_candidats(etat, matchs, marches)
     matchs_avec_cotes = {c["matchId"] for c in candidats}
     marches_disponibles: dict[str, int] = {}
