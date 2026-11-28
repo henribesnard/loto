@@ -165,16 +165,22 @@ def extraire_candidats(
             categorie = str(bet.get("betTypeCategory") or "").strip() or "Autre"
             if not _marche_admis(categorie, marches):
                 continue
+            identifiant_marche = bet.get("marketId")
+            if identifiant_marche is None:
+                identifiant_marche = bet.get("betId", -1)
             try:
-                priorite = 0 if int(bet.get("marketId", -1)) == cible else 1
+                identifiant_marche = int(identifiant_marche)
             except (TypeError, ValueError):
-                priorite = 1
-            retenus.append((priorite, categorie, selections))
+                identifiant_marche = -1
+            retenus.append((0 if identifiant_marche == cible else 1, categorie, selections, identifiant_marche))
         retenus.sort(key=lambda r: r[0])
-        for _priorite, categorie, selections in retenus:
+        for _priorite, categorie, selections, identifiant_marche in retenus:
             c = dict(m)
             c["marche"] = categorie
-            c["marcheKey"] = f"{m['matchId']}::{categorie}"
+            # Clé unique par marché réel (plusieurs marchés peuvent partager
+            # une même catégorie, ex. « Stats joueurs ») : sans cela, un même
+            # marché pouvait apparaître deux fois dans un combiné.
+            c["marcheKey"] = f"{m['matchId']}::{identifiant_marche}"
             c["selections"] = selections
             candidats.append(c)
     return candidats
@@ -230,24 +236,35 @@ def _produit(jambes: list[dict]) -> float:
 
 
 def _completer(favoris: list[dict], autres: list[dict], cote_min: float, max_jambes: int) -> Optional[list[dict]]:
-    """Ajoute des jambes jusqu'à dépasser la cote cible ; None si impossible."""
-    jambes: list[dict] = []
-    for jambe in favoris:
-        jambes.append(jambe)
-        if _produit(jambes) >= cote_min or len(jambes) >= max_jambes:
-            return jambes if _produit(jambes) >= cote_min else None
-    for jambe in autres:
-        jambes.append(jambe)
-        if _produit(jambes) >= cote_min or len(jambes) >= max_jambes:
-            return jambes if _produit(jambes) >= cote_min else None
-    return jambes if _produit(jambes) >= cote_min else None
+    """Ajoute des jambes jusqu'à dépasser la cote cible ; None si impossible.
+
+    Un même match n'apparaît qu'une seule fois (pas de jambes corrélées).
+    Deux ordres sont tentés : favoris puis réserve, puis réserve puis favoris
+    (utile quand peu de jambes suffisent via la réserve).
+    """
+    def _sequence(ordre: list[dict]) -> Optional[list[dict]]:
+        jambes: list[dict] = []
+        matchs_vus: set[int] = set()
+        for jambe in ordre:
+            if jambe["matchId"] in matchs_vus:
+                continue
+            matchs_vus.add(jambe["matchId"])
+            jambes.append(jambe)
+            if _produit(jambes) >= cote_min or len(jambes) >= max_jambes:
+                return jambes if _produit(jambes) >= cote_min else None
+        return jambes if _produit(jambes) >= cote_min else None
+
+    resultat = _sequence(list(favoris) + list(autres))
+    if resultat:
+        return resultat
+    return _sequence(list(autres) + list(favoris))
 
 
 def construire_combines(
     candidats: list[dict],
     cote_min: float = 500.0,
     nb_combines: int = 3,
-    max_jambes: int = 40,
+    max_jambes: int = 4,
 ) -> list[dict]:
     """Construit jusqu'à nb_combines combinés distincts ≥ cote_min.
 
@@ -258,9 +275,12 @@ def construire_combines(
       2. « Équilibré »: alternance entre sports pour répartir le risque ;
       3. « Forme »   : favoris triés par score de confiance (forme récente).
 
-    Un marché déjà consommé par un combiné (clé matchId × catégorie) n'est pas
-    réutilisé par les combinés suivants, ce qui garantit des combinés aux
-    marchés deux à deux disjoints. Les cotes ultra-courtes (< 1.15)
+    Un marché déjà consommé par un combiné (clé matchId × identifiant de
+    marché) n'est pas réutilisé par les combinés suivants : les combinés
+    produits n partagent aucune sélection. Au sein d'un combiné, un même
+    match n'apparaît qu'une seule fois (pas de jambes corrélées). Par défaut
+    un combiné compte au maximum quatre sélections (max_jambes). Les cotes
+    ultra-courtes (< 1.15)
     n'alimentent pas les jambes principales mais restent en réserve de secours.
     """
     candidats = [m for m in candidats if m.get("selections")]

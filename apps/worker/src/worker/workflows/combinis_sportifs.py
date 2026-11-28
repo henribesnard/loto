@@ -70,6 +70,12 @@ class CombinesInput(BaseModel):
             "rencontrées sont listées dans le champ 'marches_disponibles' du résultat."
         ),
     )
+    max_selections: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        description="Nombre maximum de sélections (jambes) par combiné (4 par défaut).",
+    )
     avec_commentaire_llm: bool = True
     modele: str = "mistral-large-latest"
 
@@ -120,6 +126,7 @@ async def collecter_analyser(
     nb_combines: int,
     filtres_equipes: Optional[list[str]],
     marches: Optional[list[str]],
+    max_selections: int,
 ) -> dict:
     from worker import combinis
     from worker import winamax
@@ -149,7 +156,7 @@ async def collecter_analyser(
     marches_disponibles: dict[str, int] = {}
     for c in candidats:
         marches_disponibles[c["marche"]] = marches_disponibles.get(c["marche"], 0) + 1
-    combines = combinis.construire_combines(candidats, cote_min=cote_minimale, nb_combines=nb_combines)
+    combines = combinis.construire_combines(candidats, cote_min=cote_minimale, nb_combines=nb_combines, max_jambes=max_selections)
     return {
         "sports": sports,
         "fenetre": combinis.plage_lisible(maintenant, fin),
@@ -223,7 +230,8 @@ async def rediger_commentaire_combinis(analyse: dict, cote_minimale: float, mode
         "marquent, buts plus/moins, handicap, etc.), et construit des combinés dont la cote "
         "totale atteint au minimum la cible (500 par défaut). Peut être restreint à des équipes "
         "données (filtres_equipes) ou à certaines catégories de marchés (marches ; les catégories "
-        "rencontrées sont listées dans marches_disponibles). Ajoute un commentaire d'analyse "
+        "rencontrées sont listées dans marches_disponibles). Quatre sélections maximum par "
+        "combiné par défaut (max_selections). Ajoute un commentaire d'analyse "
         "Mistral. Rappel : très haute cote = très faible probabilité, jouer reste un risque."
     ),
 )
@@ -237,6 +245,7 @@ class CombinisSportifsWorkflow:
             input.nb_combines,
             input.filtres_equipes,
             input.marches,
+            input.max_selections,
         )
         commentaire = None
         if input.avec_commentaire_llm and analyse["combines"]:
